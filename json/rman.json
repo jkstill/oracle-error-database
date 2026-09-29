@@ -14913,7 +14913,7 @@
     "params": "NA",
     "note": "NA",
     "info": "NA",
-    "remediation": "NA"
+    "remediation": "1) A warning, not a failure -- the backup continues, but the current log at the primary was not archived, so the backup may not be as recoverable as expected. Do not ignore it. 2) The real cause is in the error messages that accompany this line. Read those first; this message alone says nothing actionable. 3) Most often the primary cannot archive at all, which is ORA-00257 or ORA-16038 -- check the recovery area and destinations: `SELECT name, space_limit/1024/1024/1024 limit_gb, space_used/1024/1024/1024 used_gb FROM v$recovery_file_dest;` and `SELECT dest_id, status, error FROM v$archive_dest WHERE status <> 'INACTIVE';` 4) On a standby, confirm the connection to the primary is usable -- RMAN needs to reach it to force the switch: check the connect string used and `SELECT database_role, open_mode FROM v$database;` on both. 5) Verify the gap afterwards: `SELECT thread#, MAX(sequence#) FROM v$archived_log WHERE applied = 'YES' GROUP BY thread#;` on the standby against `SELECT thread#, MAX(sequence#) FROM v$log WHERE status = 'CURRENT' GROUP BY thread#;` on the primary. 6) Once archiving works, force the switch manually and re-run the backup: `ALTER SYSTEM ARCHIVE LOG CURRENT;`"
   },
   {
     "facility": "rman",
@@ -17769,7 +17769,7 @@
     "params": "NA",
     "note": "NA",
     "info": "NA",
-    "remediation": "NA"
+    "remediation": "1) This line arrives as part of an RMAN message stack, not on its own -- the preceding RMAN- line names the file. Read the whole stack before acting. 2) It is most often raised by a catalog or crosscheck operation finding a file in the recovery area that RMAN cannot parse. That is frequently a non-Oracle file that does not belong there, not corruption. 3) Identify the file and confirm what it is before deleting anything: `ls -l <path>` and check whether the database knows it: `SELECT name FROM v$datafile UNION ALL SELECT name FROM v$controlfile UNION ALL SELECT member FROM v$logfile UNION ALL SELECT name FROM v$tempfile;` 4) If it is a genuine database file, do not delete it -- treat it as corruption: `RMAN> VALIDATE DATAFILE <f>;` then `SELECT * FROM v$database_block_corruption;` and follow ORA-01578. 5) If it is a stray file (an OS copy, a half-written backup piece, an editor temp file) it is safe to remove at the OS level, then `RMAN> CROSSCHECK BACKUP; CROSSCHECK ARCHIVELOG ALL; DELETE EXPIRED BACKUP; DELETE EXPIRED ARCHIVELOG ALL;` to resynchronise the catalog. 6) The message's own advice to delete the file with an OS utility assumes it is not an Oracle file -- verify that assumption first, because deleting a live datafile is unrecoverable without a backup."
   },
   {
     "facility": "rman",

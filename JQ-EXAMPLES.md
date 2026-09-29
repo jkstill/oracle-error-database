@@ -7,6 +7,7 @@ Three shapes are produced, all holding the same records:
 | `json/<facility>.json` | array of records | one facility at a time |
 | `oracle-errors.json` | object: facility -> array | whole set, keyed lookup |
 | `oracle-errors.ndjson` | one record per line | streaming / grep prefilter / bulk load |
+| `ora-internal-variants.ndjson` | one record per line | ORA-00600 / ORA-07445 first arguments |
 
 Record fields: `facility`, `error_number` (verbatim, may be zero-padded),
 `error_code` (int), `description`, `cause`, `action`, `params`, `note`, `info`,
@@ -16,7 +17,15 @@ single-line string -- newlines in the source are collapsed to spaces, so
 
 Sparse fields, worth knowing before you filter on them: `params` 4,865 records
 (`ora`, `ogg`, `dia`), `note` 24 (`dia`, `ora`), `info` 13 (`ora`, `dia`),
-`remediation` 66 (`ora` only).
+`remediation` 71 (69 `ora`, 2 `rman`).
+
+`ora-internal-variants.ndjson` is a **separate table**, not part of the error
+records. ORA-00600 and ORA-07445 carry a first argument that identifies a defect
+rather than data (`ORA-00600: ... [KGHFRE3]`). Those arguments are not error
+codes -- they appear nowhere in the `*.msg` files -- so they live in their own
+lookup keyed `"ora-<code>:<lowercased argument>"`, with fields `key`,
+`error_code`, `argument`, `subsystem`, `confidence`, `note`, `related` and
+`remediation`. Source: `ora-internal-variants.json`.
 
 `description`, `cause`, `action`, `params`, `note` and `info` are extracted from
 the `*.msg` files. `remediation` is hand-written and lives in `remediation.json`,
@@ -208,6 +217,57 @@ Errors referenced by your own code that have no runbook yet:
        oracle-errors.ndjson | sort -u > /tmp/have.txt
     comm -23 /tmp/seen.txt /tmp/have.txt     # comm needs plain sort, not sort -n
 
+## ORA-00600 and ORA-07445 arguments
+
+Resolve one from an alert log line. The base runbook carries the shared workflow
+(pull the ADR incident, MOS 153788.1, patch level, SR); the variant carries what
+differs -- which subsystem failed and what to correlate against:
+
+    ARG=$(echo 'ORA-00600: internal error code, arguments: [KGHFRE3], [0x7F], []' \
+          | sed -E 's/.*arguments: \[([^]]*)\].*/\1/' | tr 'A-Z' 'a-z')
+
+    jq -c --arg k "ora-600:$ARG" 'select(.key == $k)' ora-internal-variants.ndjson
+
+Both halves in one object, which is what an agent wants:
+
+    jq -n --arg k "ora-600:$ARG" \
+       --slurpfile base <(jq -c 'select(.facility=="ora" and .error_code==600)' \
+                          oracle-errors.ndjson) \
+       --slurpfile var  <(jq -c --arg k "ora-600:$ARG" 'select(.key==$k)' \
+                          ora-internal-variants.ndjson) \
+       '{id: "ORA-00600", argument: ($var[0].argument // "unclassified"),
+         subsystem: ($var[0].subsystem // "unknown"),
+         confidence: ($var[0].confidence // "none"),
+         related: ($var[0].related // []),
+         workflow: $base[0].remediation,
+         specific: ($var[0].remediation // null)}'
+
+An argument with no entry is not an error -- it simply has no classification,
+and the base runbook is the correct and complete answer for it.
+
+What is classified, and how certain:
+
+    jq -r '"\(.confidence|ascii_upcase)\t\(.argument)\t\(.subsystem)"' \
+       ora-internal-variants.ndjson | sort | column -t -s$'\t'
+
+Entries a human should confirm against MOS before trusting the subsystem hint:
+
+    jq -r 'select(.confidence == "low") | "\(.argument) -- \(.note)"' \
+       ora-internal-variants.ndjson
+
+Follow a variant's correlations back into the error data:
+
+    jq -r --arg k 'ora-600:kghfre3' 'select(.key==$k) | .related[]' \
+       ora-internal-variants.ndjson \
+      | while read r; do
+          jq -c --arg f "${r%%-*}" --argjson n "${r##*-}" \
+             'select(.facility==$f and .error_code==$n)
+              | {id: "\(.facility|ascii_upcase)-\(.error_number)", description}' \
+             oracle-errors.ndjson
+        done
+
+## Maintenance
+
 Validate `remediation.json` keys against the data before rebuilding:
 
     jq -r 'keys[]' remediation.json | sed 's/^ora-//' | sort -u > /tmp/keys.txt
@@ -215,5 +275,12 @@ Validate `remediation.json` keys against the data before rebuilding:
       | sort -u > /tmp/codes.txt
     comm -23 /tmp/keys.txt /tmp/codes.txt    # keys matching no error; empty is good
 
-(`msg2json.py` performs this same check on every run and warns if a key is
-orphaned, so this is only needed when editing `remediation.json` by hand.)
+`msg2json.py` performs this check on every run -- for `remediation.json` keys,
+for each variant's `error_code`, and for every `related` entry a variant points
+at. Orphans warn; they never fail the build. Run the check by hand only when
+editing the sidecar files outside the generator.
+
+To add remediation or a variant, edit `remediation.json` or
+`ora-internal-variants.json` and re-run `python3 msg2json.py`. The extracted
+fields are rebuilt from the `*.msg` files every time; the hand-written ones are
+merged back in, so nothing you write is overwritten.

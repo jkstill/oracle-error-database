@@ -1,0 +1,100 @@
+{
+  "ora-600:25012": {
+    "argument": "25012",
+    "confidence": "low",
+    "error_code": 600,
+    "note": "A numeric first argument is an internal check number rather than a function name, so the prefix convention does not apply and the subsystem cannot be inferred the same way. 25012 is associated with rowid-to-segment consistency checks, commonly surfacing on partitioned tables and their indexes, but confirm against MOS rather than relying on this.",
+    "related": [
+      "ora-1578",
+      "ora-8103"
+    ],
+    "remediation": "1) Numeric ORA-00600 arguments are check IDs -- the accompanying arguments carry the values that failed the check, and are essential to the lookup. Capture the full argument list, not just the first. 2) The reported context is usually a rowid pointing at a segment that does not match. Identify the object: `SELECT owner, segment_name, segment_type, partition_name FROM dba_extents WHERE file_id = <f> AND <b> BETWEEN block_id AND block_id + blocks - 1;` 3) On a partitioned table, suspect an index that disagrees with the table -- validate and rebuild: `ANALYZE TABLE <o>.<t> VALIDATE STRUCTURE CASCADE INTO INVALID_ROWS;` then `ALTER INDEX <o>.<i> REBUILD ONLINE;` 4) Check for unusable or stale partitioned index segments: `SELECT index_name, partition_name, status FROM dba_ind_partitions WHERE status <> 'USABLE';` 5) Rule out block corruption: `SELECT * FROM v$database_block_corruption;` and `RMAN> VALIDATE DATABASE;` 6) Look for a recent partition maintenance operation -- EXCHANGE, SPLIT, DROP and MOVE without index maintenance are the usual antecedents: `SELECT owner, object_name, subobject_name, last_ddl_time FROM dba_objects WHERE object_type LIKE '%PARTITION%' AND last_ddl_time > SYSDATE - 7 ORDER BY last_ddl_time DESC;` 7) Confidence in this classification is low -- treat the MOS lookup on the full argument list as authoritative.",
+    "subsystem": "numeric internal check identifier -- segment / rowid consistency"
+  },
+  "ora-600:evaopn2.h:kaf_qeecol": {
+    "argument": "evaopn2.h:kaf_qeeCol",
+    "confidence": "low",
+    "error_code": 600,
+    "note": "The argument names a source file and function in the expression evaluation path, with kaf relating to column access during row processing. The general area is row/column evaluation at runtime; the specific meaning is an inference and should be confirmed against MOS before acting on it.",
+    "related": [
+      "ora-1578",
+      "ora-8103"
+    ],
+    "remediation": "1) Because this is in the row-processing path, rule out block corruption before assuming a code defect: `SELECT * FROM v$database_block_corruption;` and `RMAN> VALIDATE DATABASE;` 2) The trace names the SQL. Determine whether it fails on every execution or only for certain rows -- a row-dependent failure points at data, a universal one at the plan or the code. 3) Narrow it by column: run the statement selecting fewer columns until it succeeds, which identifies the column being evaluated when it fails. 4) Check the segment for structural problems: `ANALYZE TABLE <o>.<t> VALIDATE STRUCTURE CASCADE;` 5) Look for an unusual datatype or expression on that column -- virtual columns, function-based indexes, user-defined types and XMLType are over-represented in this layer: `SELECT column_name, data_type, virtual_column, data_default FROM dba_tab_cols WHERE owner = UPPER('<o>') AND table_name = UPPER('<t>');` 6) A plan change can expose it. Test with a different plan: `ALTER SESSION SET \"_optimizer_use_feedback\" = FALSE;` or a hint, to see whether the failure follows a specific access path. 7) Confidence in the subsystem mapping here is low -- verify against MOS 153788.1 before treating the classification as fact.",
+    "subsystem": "expression evaluation / column access (evaopn, kaf)"
+  },
+  "ora-600:kghfre3": {
+    "argument": "KGHFRE3",
+    "confidence": "high",
+    "error_code": 600,
+    "note": "A failure inside a KGH heap free operation. KGH manages the shared pool and other Oracle heaps, so this sits in the same territory as shared pool fragmentation and exhaustion.",
+    "related": [
+      "ora-4031",
+      "ora-4030"
+    ],
+    "remediation": "1) Check shared pool pressure at the time of the incident, which is the usual context: `SELECT pool, name, bytes/1024/1024 mb FROM v$sgastat WHERE pool = 'shared pool' ORDER BY bytes DESC FETCH FIRST 20 ROWS ONLY;` 2) Look for accompanying ORA-04031 in the alert log around the same timestamp -- if present, treat the ORA-04031 as the primary problem and follow its runbook. 3) Check whether the instance uses automatic memory management and whether a resize was in flight: `SELECT component, oper_type, oper_mode, parameter, initial_size, final_size, status FROM v$sga_resize_ops ORDER BY start_time DESC FETCH FIRST 20 ROWS ONLY;` 4) Heap corruption in KGH is frequently a known bug tied to a specific patch level -- get your exact version before searching MOS: `SELECT banner_full FROM v$version;` and `opatch lsinventory -bugs_fixed | head`. 5) If it recurs on the same heap, capture a heapdump only under Oracle Support direction -- it is expensive and can itself destabilise a loaded instance.",
+    "subsystem": "heap / memory manager (kgh)"
+  },
+  "ora-600:kkdlfjou_1": {
+    "argument": "kkdlfjou_1",
+    "confidence": "medium",
+    "error_code": 600,
+    "note": "KKD is the kernel compile dictionary layer, which handles object dependency tracking and invalidation. Expect a link to DDL, recompilation, or a dependency graph problem. The kkd prefix is well established; the specific function is inferred from context.",
+    "related": [
+      "ora-4063",
+      "ora-4061",
+      "ora-4020"
+    ],
+    "remediation": "1) Check what DDL ran near the incident -- this class of error tends to follow schema change: `SELECT owner, object_name, object_type, last_ddl_time FROM dba_objects WHERE last_ddl_time > SYSDATE - 1 ORDER BY last_ddl_time DESC FETCH FIRST 30 ROWS ONLY;` 2) Look for invalid objects, which often accompany it: `SELECT owner, object_name, object_type FROM dba_objects WHERE status = 'INVALID' ORDER BY owner, object_name;` 3) Inspect the dependency graph around the object named in the trace: `SELECT owner, name, type, referenced_owner, referenced_name, referenced_type FROM dba_dependencies WHERE referenced_name = UPPER('<obj>');` 4) Recompile cleanly rather than piecemeal: `@?/rdbms/admin/utlrp.sql` with the application quiesced. 5) If it reproduces on a specific CREATE or ALTER, capture that exact DDL for the SR -- a reproducible test case turns this from a lengthy investigation into a quick bug match. 6) Check for a dictionary inconsistency if it recurs: `@?/rdbms/admin/hcheck.sql` under Oracle Support direction, or `EXEC DBMS_HM.RUN_CHECK('Dictionary Integrity Check', 'run1');` then `SELECT dbms_hm.get_run_report('run1') FROM dual;`",
+    "subsystem": "kernel compile, dictionary / dependency layer (kkd)"
+  },
+  "ora-600:kpodpmop_01": {
+    "argument": "kpodpmop_01",
+    "confidence": "medium",
+    "error_code": 600,
+    "note": "KPO is the server-side layer that services OCI calls. A failure here usually reflects what the client sent -- a describe or bind operation the server could not process -- so the client and its driver version are part of the diagnosis, unlike most ORA-00600s.",
+    "related": [
+      "ora-3113",
+      "ora-1017"
+    ],
+    "remediation": "1) Identify the client, not just the server. The trace file header records the program and machine: `SELECT sid, program, machine, client_version FROM v$session_connect_info WHERE sid = <sid>;` 2) Note the client driver and version -- a mismatch between an old OCI/JDBC-OCI client and a newer server is a recurring cause of kpo* errors: `SELECT DISTINCT client_driver, client_version FROM v$session_connect_info;` 3) Test the same operation from a current sqlplus on the database host. If it succeeds there, the problem is the client stack, not the database. 4) Check for an accompanying ORA-03113 on the client side -- the session usually dies with it. 5) Look at what the application was doing: array binds, LOB descriptors, and implicit result sets are the usual triggers in this layer. A minimal reproducing client program is what Support will ask for. 6) Confirm both versions before searching MOS: `SELECT banner_full FROM v$version;` on the server and the client's own driver version.",
+    "subsystem": "kernel programmatic interface, OCI protocol / describe (kpo)"
+  },
+  "ora-600:krvxsmgl": {
+    "argument": "krvxsmgl",
+    "confidence": "high",
+    "error_code": 600,
+    "note": "KRV is the redo and LogMiner layer. These arguments show up overwhelmingly in the context of LogMiner, Streams, and GoldenGate integrated Extract reading redo -- that is, in a capture process rather than in ordinary database work.",
+    "related": [
+      "ora-1578",
+      "ora-16038"
+    ],
+    "remediation": "1) Establish whether a capture process was running. If GoldenGate integrated Extract or a LogMiner session was active, this is a capture failure, not a database one: `SELECT capture_name, status, error_message FROM dba_capture;` 2) `SELECT * FROM v$goldengate_capture;` and check the Extract report file for the same timestamp. 3) Identify the redo the capture was reading: `SELECT thread#, sequence#, name, completion_time FROM v$archived_log ORDER BY completion_time DESC FETCH FIRST 10 ROWS ONLY;` then verify that log is intact and still present -- a purged or partially written archivelog is a common trigger. 4) Check supplemental logging is as the capture expects: `SELECT supplemental_log_data_min, supplemental_log_data_pk, supplemental_log_data_ui FROM v$database;` 5) Capture-side failures often resolve by restarting Extract from a known-good SCN rather than by changing the database. Get the current position before restarting anything. 6) Version-sensitive: integrated capture couples tightly to the RDBMS patch level. Confirm both sides before searching MOS: `SELECT banner_full FROM v$version;`",
+    "subsystem": "redo / LogMiner (krv)"
+  },
+  "ora-600:ktugettempuseghdr: usn mismatch": {
+    "argument": "ktuGetTempUsegHdr: usn mismatch",
+    "confidence": "high",
+    "error_code": 600,
+    "note": "KTU is the kernel transaction undo layer. The argument text says the undo segment number in a temporary segment header did not match what was expected -- an undo/temp segment consistency failure rather than a memory or SQL problem.",
+    "related": [
+      "ora-1555",
+      "ora-30036",
+      "ora-1652"
+    ],
+    "remediation": "1) Check undo health first: `SELECT tablespace_name, status FROM dba_tablespaces WHERE contents = 'UNDO';` and `SELECT MAX(tuned_undoretention), MAX(maxquerylen) FROM v$undostat WHERE begin_time > SYSDATE - 1;` 2) Look for a transaction that was killed or rolled back around the incident: `SELECT * FROM dba_rollback_segs WHERE status <> 'ONLINE';` and check the alert log for dead transaction recovery. 3) Check for temp segment cleanup that did not complete: `SELECT * FROM dba_segments WHERE segment_type LIKE 'TEMPORARY%';` -- orphaned temporary segments in a permanent tablespace point at an interrupted space operation. 4) Correlate with concurrent ORA-01555 or ORA-30036; if present, the undo tablespace is undersized and that is the condition to fix. 5) This class of error can follow an instance abort during heavy DML. Confirm whether recovery completed cleanly: check the alert log at the last startup for 'Successfully onlined Undo Tablespace'. 6) Do not simply drop and recreate the undo tablespace while transactions may still need it -- confirm `SELECT COUNT(*) FROM v$transaction;` is quiet first.",
+    "subsystem": "transaction undo, temporary segment header (ktu)"
+  },
+  "ora-600:qcscbndv1": {
+    "argument": "qcscbndv1",
+    "confidence": "medium",
+    "error_code": 600,
+    "note": "QCS is the query compiler's semantic analysis layer; the 'bndv' fragment suggests bind variable handling during parse. Expect it to be tied to one specific statement rather than to instance health. The prefix is solid; the exact function role is inferred.",
+    "related": [
+      "ora-4031",
+      "ora-6502"
+    ],
+    "remediation": "1) Identify the statement. A parse-time internal error is reproducible, which makes this far easier than most ORA-00600s -- the trace file names the SQL: `SELECT value FROM v$diag_info WHERE name = 'Diag Trace';` 2) `SELECT sql_id, sql_text FROM v$sql WHERE sql_text LIKE '%<fragment>%';` then `SELECT * FROM v$sql_bind_capture WHERE sql_id = '<sql_id>';` to see the bind shapes involved. 3) Test whether it is bind-specific by running the statement with literals instead of binds. If literals succeed, the trigger is bind handling and the workaround is usually a small rewrite. 4) Check cursor_sharing -- forcing literal replacement can expose this class of bug: `SHOW PARAMETER cursor_sharing` 5) Look for an unusual construct in the statement: a bind in a place binds are rarely used (in a LIMIT/FETCH clause, inside a function-based predicate, or with an ANSI outer join). Rewriting that clause is the practical workaround while the SR is open. 6) Flush just this cursor rather than the whole pool: `EXEC DBMS_SHARED_POOL.PURGE('<address>,<hash_value>', 'C');` using the address and hash from `SELECT address, hash_value FROM v$sqlarea WHERE sql_id = '<sql_id>';`",
+    "subsystem": "query compile, semantic analysis / bind handling (qcs)"
+  }
+}

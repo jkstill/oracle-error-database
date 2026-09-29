@@ -8229,7 +8229,7 @@
     "params": "NA",
     "note": "NA",
     "info": "NA",
-    "remediation": "NA"
+    "remediation": "1) Almost always arrives with ORA-27101 on a local connection, and is the same incident as ORA-12505 seen from a remote client: the instance is not running. Treat the three together rather than separately. 2) Check whether an instance is actually up: `ps -ef | grep [o]ra_pmon` on the database host. No pmon process means no instance, whatever the listener reports. 3) Confirm the environment points at the instance you think it does -- a mismatched ORACLE_SID or ORACLE_HOME produces this against a perfectly healthy database: `echo $ORACLE_SID $ORACLE_HOME` and cross-check /etc/oratab. The SID is case-sensitive. 4) Connect locally and look: `sqlplus / as sysdba` then `SELECT instance_name, status, startup_time FROM v$instance;` 5) If it is down, read the alert log before restarting -- a failed startup leaves the reason there, and restarting blind discards it. 6) Start it: `STARTUP;` -- or `STARTUP MOUNT` first if you need to inspect before opening. 7) If the instance is up and this persists, it is an ORACLE_HOME or permissions mismatch rather than an availability problem -- see ORA-27101. 8) A database that is open but still refusing connections is ORA-01033, not this."
   },
   {
     "facility": "ora",
@@ -73077,7 +73077,7 @@
     "params": "1) SID_value: Name of the Oracle Database instance on the host computer. 2) host_port: The host and port that the Oracle Database listener process is on. 3) connection_id: The connection ID.",
     "note": "NA",
     "info": "NA",
-    "remediation": "NA"
+    "remediation": "1) The listener answered but does not know that SID. This is the SID-based counterpart of ORA-12514 -- if the client is using SERVICE_NAME rather than SID, you want ORA-12514 instead. 2) See what the listener has: `lsnrctl status` and `lsnrctl services` on the database host. 3) The usual cause is that the instance is down or still starting, so nothing registered -- check `ps -ef | grep [o]ra_pmon` and see ORA-01034. 4) If the instance is up, force registration rather than waiting for the next PMON cycle: `ALTER SYSTEM REGISTER;` 5) Dynamic registration only publishes service names, not SIDs. For a SID-based connect string the listener needs a static entry -- add a SID_LIST_<listener> block naming SID_NAME and ORACLE_HOME in listener.ora, then `lsnrctl reload`. 6) The better fix is usually to move the client to SERVICE_NAME, which registers dynamically and works with PDBs and RAC services: `SELECT name FROM v$services;` then update the connect descriptor. 7) In a CDB, a PDB is reachable only by service name and only while open -- SID-based connections to a PDB will never work: `SELECT name, open_mode FROM v$pdbs;`"
   },
   {
     "facility": "ora",
@@ -154917,7 +154917,7 @@
     "params": "NA",
     "note": "NA",
     "info": "NA",
-    "remediation": "NA"
+    "remediation": "1) This is the OS-level half of ORA-01034 -- the client found no shared memory segment for the SID it asked for. Diagnose at the OS before touching the database. 2) Confirm the environment: `echo $ORACLE_SID $ORACLE_HOME` and compare against /etc/oratab. A trailing slash on ORACLE_HOME, or a SID in the wrong case, is enough to cause this. 3) Check whether the instance's shared memory actually exists: `ipcs -m` as the oracle user, and `ps -ef | grep [o]ra_pmon` to see which SIDs are really running. 4) If pmon is running but you still get this, you are connecting from a different ORACLE_HOME than the one that started the instance -- the two must match for a bequeath connection. Connect through the listener instead, or fix the environment. 5) Check permissions on $ORACLE_HOME/bin/oracle: it must be setuid and owned by the oracle user (`ls -l $ORACLE_HOME/bin/oracle` should show `-rwsr-s--x`). A relink or a patch that reset this produces ORA-27101 for every non-oracle OS user. 6) Check for a stale segment after an abort: `ipcs -m` showing a segment with zero attached processes and no matching pmon can be removed with `ipcrm -m <id>` -- only once you have confirmed the instance is truly down. 7) On a host running multiple instances, confirm you are not picking up another instance's environment from a sourced profile."
   },
   {
     "facility": "ora",

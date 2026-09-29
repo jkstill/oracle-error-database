@@ -2,9 +2,10 @@
 """Convert Oracle *.msg error message files to JSON and/or NDJSON.
 
 Outputs (under --outdir, default the script's directory):
-  json/<facility>.json   one array per facility
-  oracle-errors.json     object keyed by facility
-  oracle-errors.ndjson   one error record per line
+  json/<facility>.json           one array per facility
+  oracle-errors.json             object keyed by facility
+  oracle-errors.ndjson           one error record per line
+  ora-internal-variants.ndjson   ORA-00600/07445 first-argument classification
 
 Record shape:
   facility, error_number (verbatim), error_code (int), description,
@@ -13,6 +14,11 @@ Record shape:
 Everything but `remediation` is extracted from the *.msg files. `remediation`
 is hand-written and lives in remediation.json, keyed "<facility>-<error_code>",
 so regenerating never overwrites it.
+
+ORA-00600 and ORA-07445 carry a first argument that identifies a defect rather
+than data. Those are classified in ora-internal-variants.json, keyed
+"ora-<code>:<lowercased argument>", and emitted as their own table -- they are
+not error codes and are deliberately not merged into the error records.
 """
 
 import argparse
@@ -36,6 +42,7 @@ WANTED = {'cause', 'action', 'params', 'note', 'info'}
 SKIP_FILES = {'ocius.msg'}
 
 REMEDIATION_FILE = 'remediation.json'
+VARIANTS_FILE = 'ora-internal-variants.json'
 
 
 def read_quoted(lines, i, start):
@@ -131,12 +138,21 @@ def parse(path, facility):
     return errors
 
 
-def load_remediation(path):
-    """Hand-written remediation text, keyed "<facility>-<error_code>"."""
+def load_sidecar(path):
+    """Hand-written JSON kept alongside the *.msg files. Absent is not an error."""
     if not os.path.exists(path):
         return {}
     with open(path, encoding='utf-8') as fh:
         return json.load(fh)
+
+
+def check_keys(keys, known, label):
+    """Warn about hand-written keys that resolve to no error. Never fatal."""
+    orphans = sorted(set(keys) - known)
+    if orphans:
+        print('WARNING: %d %s match no error: %s'
+              % (len(orphans), label, ', '.join(orphans)), file=sys.stderr)
+    return orphans
 
 
 def main():
@@ -152,12 +168,17 @@ def main():
     ap.add_argument('--remediation', default=None,
                     help='remediation JSON (default: %s beside the *.msg files)'
                          % REMEDIATION_FILE)
+    ap.add_argument('--variants', default=None,
+                    help='ORA-00600/07445 argument JSON (default: %s beside the '
+                         '*.msg files)' % VARIANTS_FILE)
     args = ap.parse_args()
 
     skip = set() if args.include_oci else SKIP_FILES
     os.makedirs(args.outdir, exist_ok=True)
     rem_path = args.remediation or os.path.join(args.srcdir, REMEDIATION_FILE)
-    remediation = load_remediation(rem_path)
+    remediation = load_sidecar(rem_path)
+    var_path = args.variants or os.path.join(args.srcdir, VARIANTS_FILE)
+    variants = load_sidecar(var_path)
 
     combined = {}
     for name in sorted(os.listdir(args.srcdir)):
@@ -199,6 +220,15 @@ def main():
                     fh.write(json.dumps(record) + '\n')
         print('wrote %s' % path, file=sys.stderr)
 
+        if variants:
+            path = os.path.join(args.outdir, 'ora-internal-variants.ndjson')
+            with open(path, 'w') as fh:
+                for key in sorted(variants):
+                    record = dict(variants[key], key=key)
+                    fh.write(json.dumps(record) + '\n')
+            print('wrote %s (%d variants)' % (path, len(variants)),
+                  file=sys.stderr)
+
     total = sum(len(v) for v in combined.values())
     done = sum(1 for v in combined.values() for e in v
                if e['remediation'] != 'NA')
@@ -206,11 +236,14 @@ def main():
           % (len(combined), total, done,
              rem_path if remediation else 'none found'), file=sys.stderr)
 
-    unused = set(remediation) - {'%s-%d' % (e['facility'], e['error_code'])
-                                 for v in combined.values() for e in v}
-    if unused:
-        print('WARNING: %d remediation keys match no error: %s'
-              % (len(unused), ', '.join(sorted(unused))), file=sys.stderr)
+    known = {'%s-%d' % (e['facility'], e['error_code'])
+             for v in combined.values() for e in v}
+    check_keys(remediation, known, 'remediation keys')
+    # A variant's own error must exist, and so must everything it points at.
+    check_keys(('ora-%s' % v.get('error_code') for v in variants.values()),
+               known, 'variant error_code values')
+    check_keys((rel for v in variants.values() for rel in v.get('related', ())),
+               known, 'variant related entries')
 
 
 if __name__ == '__main__':

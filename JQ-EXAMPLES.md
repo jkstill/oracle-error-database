@@ -15,7 +15,15 @@ single-line string -- newlines in the source are collapsed to spaces, so
 `info`'s fenced code blocks keep their backticks but the SQL sits on one line.
 
 Sparse fields, worth knowing before you filter on them: `params` 4,865 records
-(`ora`, `ogg`, `dia`), `note` 24 (`dia`, `ora`), `info` 13 (`ora`, `dia`).
+(`ora`, `ogg`, `dia`), `note` 24 (`dia`, `ora`), `info` 13 (`ora`, `dia`),
+`remediation` 66 (`ora` only).
+
+`description`, `cause`, `action`, `params`, `note` and `info` are extracted from
+the `*.msg` files. `remediation` is hand-written and lives in `remediation.json`,
+keyed `"<facility>-<error_code>"`; `msg2json.py` merges it in at build time, so
+regenerating never overwrites it. To add or edit remediation text, edit that file
+and re-run `python3 msg2json.py`. Keys that match no error are reported as a
+warning rather than silently dropped.
 
 `error_number` padding is inconsistent across facilities (`ora` uses `"01017"`,
 `rman` uses `"6059"`). **Match on `error_code` unless you need the literal.**
@@ -157,15 +165,55 @@ drops the whole record rather than the one field:
     jq -c '{facility, error_code, description, cause, action, info}
            | with_entries(select(.value != "NA"))' oracle-errors.ndjson
 
-## Filling in remediation
+## Remediation
 
-Find what still needs writing:
+Which errors have a runbook:
 
-    jq -r 'select(.remediation == "NA" and .facility == "ora")
-           | .error_code' oracle-errors.ndjson | head
+    jq -r 'select(.remediation != "NA")
+           | "\(.facility|ascii_upcase)-\(.error_number)  \(.description)"' \
+       oracle-errors.ndjson
 
-Apply remediation text from a `{"ora-1017": "...", ...}` side file:
+The runbook for one error:
 
-    jq -c --slurpfile r remediation.json \
-       '.remediation = ($r[0]["\(.facility)-\(.error_code)"] // .remediation)' \
-       oracle-errors.ndjson > oracle-errors-new.ndjson
+    jq -r 'select(.facility == "ora" and .error_code == 257) | .remediation' \
+       oracle-errors.ndjson
+
+To split the steps onto separate lines, do *not* break on any `N)` -- that
+pattern also occurs inside the SQL (`ROUND(x, 1)`, `VARCHAR2(10)`). Break only
+on the next expected step number:
+
+    jq -r 'select(.facility == "ora" and .error_code == 257) | .remediation' \
+       oracle-errors.ndjson \
+      | awk '{n=2; s=$0
+              while (i = index(s, " " n ") ")) { s = substr(s,1,i-1) "\n" substr(s,i+1); n++ }
+              print s}'
+
+Everything an agent needs to respond to an error, in one object:
+
+    jq -c --arg f ora --argjson n 1653 \
+       'select(.facility == $f and .error_code == $n)
+        | {id: "\(.facility|ascii_upcase)-\(.error_number)", description,
+           cause, action, remediation}' oracle-errors.ndjson
+
+Remediation coverage by theme -- useful for spotting gaps:
+
+    jq -r 'select(.remediation != "NA") | .error_code' oracle-errors.ndjson \
+      | sort -n | tr '\n' ' '
+
+Errors referenced by your own code that have no runbook yet:
+
+    grep -rhoE 'ORA-[0-9]{4,5}' <your source dir> | sed -E 's/ORA-0*//' \
+      | sort -u > /tmp/seen.txt
+    jq -r 'select(.facility == "ora" and .remediation != "NA") | .error_code' \
+       oracle-errors.ndjson | sort -u > /tmp/have.txt
+    comm -23 /tmp/seen.txt /tmp/have.txt     # comm needs plain sort, not sort -n
+
+Validate `remediation.json` keys against the data before rebuilding:
+
+    jq -r 'keys[]' remediation.json | sed 's/^ora-//' | sort -u > /tmp/keys.txt
+    jq -r 'select(.facility == "ora") | .error_code' oracle-errors.ndjson \
+      | sort -u > /tmp/codes.txt
+    comm -23 /tmp/keys.txt /tmp/codes.txt    # keys matching no error; empty is good
+
+(`msg2json.py` performs this same check on every run and warns if a key is
+orphaned, so this is only needed when editing `remediation.json` by hand.)

@@ -9,6 +9,10 @@ Outputs (under --outdir, default the script's directory):
 Record shape:
   facility, error_number (verbatim), error_code (int), description,
   cause, action, params, note, info, remediation   -- "NA" when absent
+
+Everything but `remediation` is extracted from the *.msg files. `remediation`
+is hand-written and lives in remediation.json, keyed "<facility>-<error_code>",
+so regenerating never overwrites it.
 """
 
 import argparse
@@ -30,6 +34,8 @@ WANTED = {'cause', 'action', 'params', 'note', 'info'}
 # ocius.msg is byte-identical to oraus.msg; it only exists so OCI-generated
 # errors resolve. Skipping it avoids duplicating ~27k records.
 SKIP_FILES = {'ocius.msg'}
+
+REMEDIATION_FILE = 'remediation.json'
 
 
 def read_quoted(lines, i, start):
@@ -125,6 +131,14 @@ def parse(path, facility):
     return errors
 
 
+def load_remediation(path):
+    """Hand-written remediation text, keyed "<facility>-<error_code>"."""
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding='utf-8') as fh:
+        return json.load(fh)
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser(description=__doc__,
@@ -135,10 +149,15 @@ def main():
     ap.add_argument('--outdir', default=here, help='where to write output')
     ap.add_argument('--include-oci', action='store_true',
                     help='also emit ocius.msg (a duplicate of oraus.msg)')
+    ap.add_argument('--remediation', default=None,
+                    help='remediation JSON (default: %s beside the *.msg files)'
+                         % REMEDIATION_FILE)
     args = ap.parse_args()
 
     skip = set() if args.include_oci else SKIP_FILES
     os.makedirs(args.outdir, exist_ok=True)
+    rem_path = args.remediation or os.path.join(args.srcdir, REMEDIATION_FILE)
+    remediation = load_remediation(rem_path)
 
     combined = {}
     for name in sorted(os.listdir(args.srcdir)):
@@ -146,9 +165,17 @@ def main():
             continue
         base = name[:-4]
         facility = base[:-2] if base.endswith('us') else base
-        combined[facility] = parse(os.path.join(args.srcdir, name), facility)
-        print('%-14s -> %-8s (%d errors)' % (name, facility,
-                                             len(combined[facility])),
+        errors = parse(os.path.join(args.srcdir, name), facility)
+        applied = 0
+        for record in errors:
+            text = remediation.get('%s-%d' % (facility, record['error_code']))
+            if text:
+                record['remediation'] = text
+                applied += 1
+        combined[facility] = errors
+        print('%-14s -> %-8s (%d errors%s)'
+              % (name, facility, len(errors),
+                 ', %d remediated' % applied if applied else ''),
               file=sys.stderr)
 
     if args.format in ('json', 'both'):
@@ -173,7 +200,17 @@ def main():
         print('wrote %s' % path, file=sys.stderr)
 
     total = sum(len(v) for v in combined.values())
-    print('%d facilities, %d errors' % (len(combined), total), file=sys.stderr)
+    done = sum(1 for v in combined.values() for e in v
+               if e['remediation'] != 'NA')
+    print('%d facilities, %d errors, %d with remediation (from %s)'
+          % (len(combined), total, done,
+             rem_path if remediation else 'none found'), file=sys.stderr)
+
+    unused = set(remediation) - {'%s-%d' % (e['facility'], e['error_code'])
+                                 for v in combined.values() for e in v}
+    if unused:
+        print('WARNING: %d remediation keys match no error: %s'
+              % (len(unused), ', '.join(sorted(unused))), file=sys.stderr)
 
 
 if __name__ == '__main__':

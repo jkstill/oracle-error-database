@@ -1,6 +1,6 @@
 
-Oracle error message files: *.msg
-Oracle Facilities List: facilities.lis
+Oracle error message files: msg/*.msg
+Oracle Facilities List: msg/facilities.lis
 
 The facility is normally the basename of the messaage file, with the suffix of 'us' stripped.
 
@@ -26,7 +26,7 @@ $  oerr ora 1017
 
 The leading zeroes in the error number are optional for lookup.
 
-The msg files in this directory are for Oracle 26ai, but the local machine does not have 26ai, so looking up of some errors may fail.
+The msg files in the ./msg directory are for Oracle 26ai, but the local machine does not have 26ai, so looking up of some errors may fail.
 
 That is not really important here.
 
@@ -124,7 +124,6 @@ For ease of lookup, the full file should contain an array per facility, with the
 Create both JSON and NDJSON files for each facility. 
 
 Provide jq queries with examples for each of the JSON file types.
-
 
 If you have other suggestions, please present them.  The goal is to have a single JSON file that can be used to populate a database of some kind for easy agent lookup.
 

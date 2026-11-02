@@ -41,6 +41,10 @@ warning rather than silently dropped.
 
 ## Single error lookup
 
+Note: NDJSON (Newline Delimited JSON) is a convenient format for streaming JSON objects, where each line is a valid JSON object.
+This can be useful for processing large datasets or for use with tools that support streaming.
+Also known as JSON Lines, or JSONL.
+
 Per-facility array:
 
     jq '.[] | select(.error_code == 1017)' json/ora.json

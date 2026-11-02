@@ -9,7 +9,14 @@ string, and absent fields are the literal `"NA"` rather than missing.
 - 71 errors with a remediation runbook (69 `ora`, 2 `rman`).
 - 8 ORA-00600 first-argument variants, classified in a separate table.
 
-The source `*.msg` files are from Oracle 26ai.
+The source `*.msg` files used for the generated files are from Oracle 26ai. The default location for these files is `./msg`.
+
+Any version of Oracle that has the `oerr` command can be used to generate the `*.msg` files.
+
+The msg files are not committed to the repository. You may find them at `$ORACLE_HOME/rdbms/mesg` or `$ORACLE_HOME/diag/rdbms/<dbname>/<instname>/trace/msg`. 
+The `facility.lis` file is also required, and is usually found in the same directory as the `*.msg` files.
+
+The error messages are always backward compatible, so the generated files are useful for any version of Oracle.
 
 ## Files
 
